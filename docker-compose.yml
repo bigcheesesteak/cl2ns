@@ -1,6 +1,6 @@
 services:
   cl2ns:
-    build: ./sync
+    image: ghcr.io/bigcheesesteak/cl2ns:latest
     container_name: cl2ns
     restart: unless-stopped
     env_file:

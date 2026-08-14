@@ -30,22 +30,31 @@ The `logindata.json` file will contain:
 
 ## Quick Start
 
-```bash
-# Clone the repo
-git clone https://github.com/youruser/cl2ns.git
-cd cl2ns
+You can run this easily using Docker Compose (or Portainer). Create a `docker-compose.yml` file:
 
-# Copy the example env and fill in your credentials
-cp .env.example .env
-nano .env
+```yaml
+version: '3.8'
 
-# Build and run
-docker compose up -d
+services:
+  cl2ns:
+    image: ghcr.io/bigcheesesteak/cl2ns:latest
+    container_name: cl2ns
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - cl2ns_data:/data
 
-# Watch the logs
-docker compose logs -f cl2ns
+volumes:
+  cl2ns_data:
 ```
 
+Next, create a `.env` file in the same directory (see **Configuration** below) with your credentials, and start the container:
+
+```bash
+docker compose up -d
+docker compose logs -f cl2ns
+```
 ## Configuration
 
 All configuration is done via environment variables. Copy `.env.example` to `.env` and fill in your values.
