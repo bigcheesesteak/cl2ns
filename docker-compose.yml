@@ -1,0 +1,12 @@
+services:
+  cl2ns:
+    build: ./sync
+    container_name: cl2ns
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - cl2ns_data:/data
+
+volumes:
+  cl2ns_data:
