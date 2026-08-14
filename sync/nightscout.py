@@ -253,25 +253,50 @@ class NightscoutUploader:
                 if not ts_field:
                     continue
                     
-                epoch_ms, date_str = self._parse_timestamp(ts_field, tz)
+                # Carelink markers are often local time without a timezone indicator
+                clean = re.sub(r"\.\d{3}Z$", "+00:00", ts_field)
+                if clean.endswith("Z"):
+                    clean = clean[:-1] + "+00:00"
+                    
+                dt = datetime.fromisoformat(clean)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=tz)  # Apply target timezone
+                dt_utc = dt.astimezone(timezone.utc)
                 
                 treatment = {
-                    "created_at": date_str,
+                    "created_at": dt_utc.isoformat(),
                     "enteredBy": USER_AGENT,
                 }
+                
+                data_vals = m.get("data", {}).get("dataValues", {})
 
                 if m_type == "INSULIN":
-                    treatment["eventType"] = "Bolus"
-                    treatment["insulin"] = float(m.get("amount", 0))
+                    treatment["eventType"] = "Correction Bolus"
+                    amount = data_vals.get("deliveredFastAmount", data_vals.get("programmedFastAmount", 0))
+                    treatment["insulin"] = float(amount)
                 elif m_type == "MEAL":
-                    treatment["eventType"] = "Meal Bolus"
-                    treatment["carbs"] = int(m.get("amount", 0))
+                    treatment["eventType"] = "Carb Correction"
+                    treatment["carbs"] = int(float(data_vals.get("amount", 0)))
 
                 if treatment.get("insulin", 0) > 0 or treatment.get("carbs", 0) > 0:
                     treatments.append(treatment)
             except Exception as e:
                 _LOGGER.debug(f"Skipping unparseable marker: {e}")
-        return treatments
+                
+        # Merge meals and boluses that occur at the exact same timestamp
+        merged = {}
+        for t in treatments:
+            key = t["created_at"]
+            if key not in merged:
+                merged[key] = t
+            else:
+                if "carbs" in t:
+                    merged[key]["carbs"] = t["carbs"]
+                if "insulin" in t:
+                    merged[key]["insulin"] = t["insulin"]
+                merged[key]["eventType"] = "Meal Bolus"
+                
+        return list(merged.values())
 
     async def upload_carelink_payload(self, data: dict, tz: ZoneInfo) -> dict:
         """Process and upload all Carelink data components to Nightscout."""
@@ -295,8 +320,6 @@ class NightscoutUploader:
         # 3. Treatments (Bolus/Carbs)
         markers = data.get("markers", [])
         if markers:
-            sample = [m for m in markers if m.get("type") == "INSULIN"][:1] + [m for m in markers if m.get("type") == "MEAL"][:1]
-            _LOGGER.info(f"Sample markers: {sample}")
             trt_items = self._build_treatments(markers, tz)
             trt_up, trt_skip = await self._post_batch("treatments", trt_items)
             results["treatments"] = (trt_up, trt_skip)
