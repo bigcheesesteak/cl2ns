@@ -60,7 +60,7 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 | `CARELINK_MAG_IDENTIFIER` | No | Legacy session identifier, usually not needed |
 | `NIGHTSCOUT_URL` | Yes | Full URL of your Nightscout instance |
 | `NIGHTSCOUT_API_SECRET` | Yes | Nightscout API secret |
-| `SYNC_INTERVAL` | No | Base polling interval in seconds (default: `300`) |
+| `SYNC_INTERVAL` | No | Base polling interval in seconds (default: `60`) |
 | `LOG_LEVEL` | No | `DEBUG`, `INFO`, `WARNING`, or `ERROR` (default: `INFO`) |
 | `TIMEZONE` | No | IANA timezone override (e.g. `Europe/Brussels`). Auto-detected from Carelink if not set. |
 
@@ -96,7 +96,7 @@ Everything is reported through container stdout. Example output:
 2026-08-13 09:34:11 [INFO] root: Carelink Data: Glucose=124 mg/dL | Battery=75% | Reservoir=182.5 U
 2026-08-13 09:34:11 [INFO] root: Nightscout Upload: SGV entries uploaded=1 (skipped=287)
 2026-08-13 09:34:11 [INFO] root: New SGV reading received and synced!
-2026-08-13 09:34:11 [INFO] root: Next sync check in 300s.
+2026-08-13 09:34:11 [INFO] root: Next sync check in 60s.
 ```
 
 ## Token Refresh
