@@ -295,6 +295,7 @@ class NightscoutUploader:
         # 3. Treatments (Bolus/Carbs)
         markers = data.get("markers", [])
         if markers:
+            _LOGGER.info(f"Found {len(markers)} markers. Types present: {list(set([m.get('type') for m in markers]))}")
             trt_items = self._build_treatments(markers, tz)
             trt_up, trt_skip = await self._post_batch("treatments", trt_items)
             results["treatments"] = (trt_up, trt_skip)
