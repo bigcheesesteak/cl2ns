@@ -185,10 +185,18 @@ async def main():
                 # Resolve Timezone
                 env_tz = os.getenv("TIMEZONE")
                 if env_tz:
-                    tz = ZoneInfo(env_tz)
+                    try:
+                        tz = ZoneInfo(env_tz)
+                    except Exception:
+                        logger.warning(f"Invalid TIMEZONE '{env_tz}', falling back to UTC.")
+                        tz = ZoneInfo("UTC")
                 else:
                     cl_tz = patient_data.get("clientTimeZoneName", "UTC")
-                    tz = ZoneInfo(MS_TIMEZONE_MAP.get(cl_tz, "UTC"))
+                    tz_name = MS_TIMEZONE_MAP.get(cl_tz, cl_tz)
+                    try:
+                        tz = ZoneInfo(tz_name)
+                    except Exception:
+                        tz = ZoneInfo("UTC")
 
                 # Upload to Nightscout
                 upload_stats = await ns_uploader.upload_carelink_payload(patient_data, tz)

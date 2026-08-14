@@ -1,6 +1,6 @@
-# cl2ns
+# cl2ns (Carelink to Nightscout)
 
-Lightweight Docker container that syncs Medtronic Carelink pump and sensor data to a [Nightscout](https://nightscout.github.io/) instance. No UI, no database, no web server -- just a single background daemon that polls Carelink and uploads to Nightscout.
+**cl2ns** (Carelink to Nightscout) is a lightweight Docker container that syncs Medtronic Carelink pump and sensor data to a [Nightscout](https://nightscout.github.io/) instance. No UI, no database, no web server -- just a single background daemon that polls Carelink and uploads to Nightscout.
 
 ## ⚠️ Disclaimer
 
@@ -9,8 +9,10 @@ This software is provided for educational and informational purposes only. It is
 ## Features
 
 - Syncs SGV (sensor glucose values) with trend direction and delta
+- Syncs Treatments: Boluses, Correction Boluses, and Meal Carbs (auto-merged if simultaneous)
+- Syncs SmartGuard Auto-Basal deliveries as dynamic Temp Basal rates
 - Uploads pump device status (battery, reservoir, IOB, suspend state)
-- SHA-256 fingerprint deduplication to avoid duplicate Nightscout entries
+- SHA-256 fingerprint deduplication across all endpoints to eliminate duplicate entries
 - Adaptive polling: fast retries when waiting for new readings, then backs off
 - Automatic OAuth token refresh with persistent token storage
 - Timezone-aware timestamp conversion (auto-detected from Carelink or manually overridden)
@@ -86,6 +88,7 @@ Carelink Cloud                    cl2ns                         Nightscout
      |  <-- POST /display/message   |                              |
      |      pump + sensor data -->  |                              |
      |                              |  --> POST /api/v1/entries    |
+     |                              |  --> POST /api/v1/treatments |
      |                              |  --> POST /api/v1/devicestatus
      |                              |                              |
      |         (sleep SYNC_INTERVAL)                               |
@@ -93,23 +96,24 @@ Carelink Cloud                    cl2ns                         Nightscout
 ```
 
 1. Authenticates with the Carelink mobile API using OAuth bearer tokens
-2. Fetches the latest pump/sensor data via the `/display/message` endpoint
+2. Fetches the latest pump, sensor, and event marker data via the `/display/message` endpoint
 3. Transforms SGV readings into Nightscout `entries` with trend direction and delta
-4. Builds `devicestatus` with battery, reservoir, IOB, and suspend state
-5. Deduplicates using SHA-256 fingerprints to avoid uploading the same readings twice
-6. Sleeps and repeats. Uses fast retries (60s) when waiting for a new reading, then falls back to the configured interval.
+4. Transforms insulin, meal, and auto-basal markers into Nightscout `treatments` (boluses, carbs, and temp basals)
+5. Builds `devicestatus` with battery, reservoir, IOB, and pump suspend state
+6. Deduplicates using SHA-256 fingerprints to avoid uploading duplicate records across all endpoints
+7. Sleeps and repeats. Uses fast retries (60s) when waiting for a new reading, then falls back to the configured interval.
 
 ## Log Output
 
 Everything is reported through container stdout. Example output:
 
 ```
-2026-08-13 09:34:11 [INFO] root: --- Sync Cycle [09:34:11 UTC] ---
-2026-08-13 09:34:11 [INFO] root: Device Status: sensorState=NO_ERROR_MESSAGE | conduitInRange=True | pumpComm=True
-2026-08-13 09:34:11 [INFO] root: Carelink Data: Glucose=124 mg/dL | Battery=75% | Reservoir=182.5 U
-2026-08-13 09:34:11 [INFO] root: Nightscout Upload: SGV entries uploaded=1 (skipped=287)
-2026-08-13 09:34:11 [INFO] root: New SGV reading received and synced!
-2026-08-13 09:34:11 [INFO] root: Next sync check in 60s.
+2026-08-14 17:34:11 [INFO] root: --- Sync Cycle [17:34:11 UTC] ---
+2026-08-14 17:34:11 [INFO] root: Device Status: sensorState=NO_ERROR_MESSAGE | conduitInRange=True | pumpComm=True
+2026-08-14 17:34:11 [INFO] root: Carelink Data: Glucose=124 mg/dL | Battery=75% | Reservoir=182.5 U
+2026-08-14 17:34:11 [INFO] root: Nightscout Upload: SGV entries=1 (skipped=287) | Treatments=2 (skipped=14)
+2026-08-14 17:34:11 [INFO] root: New SGV reading received and synced!
+2026-08-14 17:34:11 [INFO] root: Next sync check in 60s.
 ```
 
 ## Token Refresh

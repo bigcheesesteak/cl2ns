@@ -109,6 +109,8 @@ class NightscoutUploader:
                 str(entry.get("created_at", "")),
                 str(entry.get("carbs", "")),
                 str(entry.get("insulin", "")),
+                str(entry.get("absolute", "")),
+                str(entry.get("duration", "")),
                 str(entry.get("notes", "")),
             )
         elif endpoint == "entries":
@@ -241,12 +243,12 @@ class NightscoutUploader:
         }]
 
     def _build_treatments(self, markers: list, tz: ZoneInfo) -> list:
-        """Transform Carelink markers into Nightscout treatments (bolus, carbs)."""
+        """Transform Carelink markers into Nightscout treatments (bolus, carbs, basal)."""
         treatments = []
         for m in markers:
             try:
                 m_type = m.get("type", "")
-                if m_type not in ["INSULIN", "MEAL"]:
+                if m_type not in ["INSULIN", "MEAL", "AUTO_BASAL_DELIVERY"]:
                     continue
 
                 ts_field = m.get("dateTime") or m.get("timestamp")
@@ -277,8 +279,13 @@ class NightscoutUploader:
                 elif m_type == "MEAL":
                     treatment["eventType"] = "Carb Correction"
                     treatment["carbs"] = int(float(data_vals.get("amount", 0)))
+                elif m_type == "AUTO_BASAL_DELIVERY":
+                    treatment["eventType"] = "Temp Basal"
+                    treatment["duration"] = 5
+                    amount = float(data_vals.get("bolusAmount", 0))
+                    treatment["absolute"] = round(amount * 12, 3)
 
-                if treatment.get("insulin", 0) > 0 or treatment.get("carbs", 0) > 0:
+                if treatment.get("insulin", 0) > 0 or treatment.get("carbs", 0) > 0 or treatment.get("absolute", 0) > 0:
                     treatments.append(treatment)
             except Exception as e:
                 _LOGGER.debug(f"Skipping unparseable marker: {e}")
@@ -317,11 +324,9 @@ class NightscoutUploader:
             sgv_up, sgv_skip = await self._post_batch("entries", sgv_items)
             results["entries"] = (sgv_up, sgv_skip)
 
-        # 3. Treatments (Bolus/Carbs)
+        # 3. Treatments (Bolus/Carbs/Basal)
         markers = data.get("markers", [])
         if markers:
-            sample = [m for m in markers if m.get("type") == "AUTO_BASAL_DELIVERY"][:1]
-            _LOGGER.info(f"Sample basal marker: {sample}")
             trt_items = self._build_treatments(markers, tz)
             trt_up, trt_skip = await self._post_batch("treatments", trt_items)
             results["treatments"] = (trt_up, trt_skip)
