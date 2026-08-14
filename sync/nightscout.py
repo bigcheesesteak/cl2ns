@@ -320,6 +320,8 @@ class NightscoutUploader:
         # 3. Treatments (Bolus/Carbs)
         markers = data.get("markers", [])
         if markers:
+            sample = [m for m in markers if m.get("type") == "AUTO_BASAL_DELIVERY"][:1]
+            _LOGGER.info(f"Sample basal marker: {sample}")
             trt_items = self._build_treatments(markers, tz)
             trt_up, trt_skip = await self._post_batch("treatments", trt_items)
             results["treatments"] = (trt_up, trt_skip)
