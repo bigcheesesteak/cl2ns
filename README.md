@@ -77,7 +77,7 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 | `NIGHTSCOUT_API_SECRET` | Yes | Nightscout API secret |
 | `SYNC_INTERVAL` | No | Base polling interval in seconds (default: `60`) |
 | `LOG_LEVEL` | No | `DEBUG`, `INFO`, `WARNING`, or `ERROR` (default: `INFO`) |
-| `TIMEZONE` | No | IANA timezone override (e.g. `Europe/Brussels`). Auto-detected from Carelink if not set. |
+| `TZ` | No | IANA timezone override (e.g. `Europe/Brussels`). Auto-detected from Carelink if not set. |
 
 ## How It Works
 
