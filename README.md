@@ -2,6 +2,10 @@
 
 Lightweight Docker container that syncs Medtronic Carelink pump and sensor data to a [Nightscout](https://nightscout.github.io/) instance. No UI, no database, no web server -- just a single background daemon that polls Carelink and uploads to Nightscout.
 
+## ⚠️ Disclaimer
+
+**This is a personal, open-source project and is NOT an official Medtronic or Nightscout product.** 
+This software is provided for educational and informational purposes only. It is **not** intended for medical purposes, and you **cannot** use the information it provides to make medical decisions or treatments. Always consult your medical professional and rely on your official medical devices.
 ## Features
 
 - Syncs SGV (sensor glucose values) with trend direction and delta

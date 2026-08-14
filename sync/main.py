@@ -193,13 +193,15 @@ async def main():
                 # Upload to Nightscout
                 upload_stats = await ns_uploader.upload_carelink_payload(patient_data, tz)
                 entries_stat = upload_stats.get("entries", (0, 0))
+                treatments_stat = upload_stats.get("treatments", (0, 0))
 
                 logger.info(
                     f"Carelink Data: Glucose={latest_sg_val} mg/dL | "
                     f"Battery={battery}% | Reservoir={reservoir} U"
                 )
                 logger.info(
-                    f"Nightscout Upload: SGV entries uploaded={entries_stat[0]} (skipped={entries_stat[1]})"
+                    f"Nightscout Upload: SGV entries={entries_stat[0]} (skipped={entries_stat[1]}) | "
+                    f"Treatments={treatments_stat[0]} (skipped={treatments_stat[1]})"
                 )
 
                 # Smart Polling Check: Has a new SGV reading arrived?

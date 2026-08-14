@@ -240,6 +240,39 @@ class NightscoutUploader:
             }
         }]
 
+    def _build_treatments(self, markers: list, tz: ZoneInfo) -> list:
+        """Transform Carelink markers into Nightscout treatments (bolus, carbs)."""
+        treatments = []
+        for m in markers:
+            try:
+                m_type = m.get("type", "")
+                if m_type not in ["INSULIN", "MEAL"]:
+                    continue
+
+                ts_field = m.get("dateTime") or m.get("timestamp")
+                if not ts_field:
+                    continue
+                    
+                epoch_ms, date_str = self._parse_timestamp(ts_field, tz)
+                
+                treatment = {
+                    "created_at": date_str,
+                    "enteredBy": USER_AGENT,
+                }
+
+                if m_type == "INSULIN":
+                    treatment["eventType"] = "Bolus"
+                    treatment["insulin"] = float(m.get("amount", 0))
+                elif m_type == "MEAL":
+                    treatment["eventType"] = "Meal Bolus"
+                    treatment["carbs"] = int(m.get("amount", 0))
+
+                if treatment.get("insulin", 0) > 0 or treatment.get("carbs", 0) > 0:
+                    treatments.append(treatment)
+            except Exception as e:
+                _LOGGER.debug(f"Skipping unparseable marker: {e}")
+        return treatments
+
     async def upload_carelink_payload(self, data: dict, tz: ZoneInfo) -> dict:
         """Process and upload all Carelink data components to Nightscout."""
         await self.load_cache()
@@ -258,6 +291,13 @@ class NightscoutUploader:
             sgv_items = self._build_sgv_entries(sgs, tz)
             sgv_up, sgv_skip = await self._post_batch("entries", sgv_items)
             results["entries"] = (sgv_up, sgv_skip)
+
+        # 3. Treatments (Bolus/Carbs)
+        markers = data.get("markers", [])
+        if markers:
+            trt_items = self._build_treatments(markers, tz)
+            trt_up, trt_skip = await self._post_batch("treatments", trt_items)
+            results["treatments"] = (trt_up, trt_skip)
 
         await self.save_cache()
         return results
