@@ -65,7 +65,6 @@ class CarelinkClient:
                 headers={
                     "User-Agent": USER_AGENT,
                     "Accept": "application/json",
-                    "Content-Type": "application/json",
                 },
                 timeout=HTTP_TIMEOUT_SEC,
                 follow_redirects=True,
@@ -214,6 +213,7 @@ class CarelinkClient:
 
         token_path = sso_config.get("system_endpoints", {}).get("token_endpoint_path", "/oauth/token")
         config["token_url"] = sso_base + token_path
+        config["is_auth0"] = is_auth0
         self.config = config
         _LOGGER.debug(f"Resolved Carelink token endpoint: {config['token_url']}")
 
@@ -238,7 +238,12 @@ class CarelinkClient:
         if self.mag_identifier:
             headers["mag-identifier"] = self.mag_identifier
 
-        resp = await client.post(token_url, data=body, headers=headers)
+        is_auth0 = self.config.get("is_auth0", False)
+        if is_auth0:
+            resp = await client.post(token_url, json=body, headers=headers)
+        else:
+            resp = await client.post(token_url, data=body, headers=headers)
+
         if resp.status_code != 200:
             raise CarelinkAuthError(f"Token refresh failed HTTP {resp.status_code}: {resp.text}")
 
