@@ -261,13 +261,14 @@ class NightscoutUploader:
         }
 
         if sensor_dur_hours is not None:
-            dev_status["sensor"]["sensorDurationHours"] = sensor_dur_hours
-            dev_status["sensor"]["sensorAgeDays"] = round(sensor_dur_hours / 24, 1)
-            dev_status["sensor"]["sensorRemainingHours"] = max(0.0, round(168 - sensor_dur_hours, 1))
-            dev_status["sensor"]["sensorRemainingDays"] = max(0.0, round(7.0 - (sensor_dur_hours / 24), 1))
+            # Medtronic Carelink reports remaining sensor life in sensorDurationHours/Minutes (countdown to expiry)
+            dev_status["sensor"]["sensorRemainingHours"] = sensor_dur_hours
+            dev_status["sensor"]["sensorRemainingDays"] = round(sensor_dur_hours / 24, 1)
+            dev_status["sensor"]["sensorAgeHours"] = max(0.0, round(168 - sensor_dur_hours, 1))
+            dev_status["sensor"]["sensorAgeDays"] = max(0.0, round(7.0 - (sensor_dur_hours / 24), 1))
 
         if sensor_dur_mins is not None:
-            dev_status["sensor"]["sensorDurationMinutes"] = sensor_dur_mins
+            dev_status["sensor"]["sensorRemainingMinutes"] = sensor_dur_mins
 
         if calib_hours is not None:
             dev_status["sensor"]["timeToNextCalibHours"] = calib_hours
@@ -285,6 +286,7 @@ class NightscoutUploader:
         treatments = []
 
         # 1. Automatic Sensor Change / Start Event
+        # In Carelink, sensorDurationMinutes is the remaining countdown time on the 7-day (10080 min) lifespan
         dur_mins = data.get("sensorDurationMinutes")
         dur_hours = data.get("sensorDurationHours")
         if dur_mins is None and dur_hours is not None:
@@ -297,14 +299,16 @@ class NightscoutUploader:
             try:
                 epoch_ms, _ = self._parse_timestamp(ref_ts, tz)
                 reading_dt = datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)
-                sensor_start_utc = reading_dt - timedelta(minutes=dur_mins)
+                # Calculate elapsed time from the 7-day lifespan (7 * 1440 = 10080 minutes)
+                elapsed_mins = max(0, 10080 - dur_mins)
+                sensor_start_utc = reading_dt - timedelta(minutes=elapsed_mins)
                 sensor_start_local = sensor_start_utc.astimezone(tz)
                 treatments.append({
                     "eventType": "Sensor Change",
                     "created_at": sensor_start_local.isoformat(),
                     "timestamp": int(sensor_start_utc.timestamp() * 1000),
                     "enteredBy": USER_AGENT,
-                    "notes": f"Medtronic Sensor Started ({round(dur_mins / 1440, 1)}d ago)",
+                    "notes": f"Medtronic Sensor (Inserted {round(elapsed_mins / 1440, 1)}d ago, {round(dur_mins / 60, 1)}h remaining)",
                 })
             except Exception as e:
                 _LOGGER.debug(f"Could not calculate sensor start treatment: {e}")
