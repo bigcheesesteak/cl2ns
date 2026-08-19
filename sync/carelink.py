@@ -29,6 +29,11 @@ class CarelinkAuthError(CarelinkError):
     pass
 
 
+class CarelinkConnectionError(CarelinkError):
+    """Network, DNS, or connectivity failure."""
+    pass
+
+
 class CarelinkClient:
     """Carelink API Client with automatic token management and persistence."""
 
@@ -159,7 +164,11 @@ class CarelinkClient:
     async def _discover_config(self):
         """Discover Carelink endpoints based on country/region."""
         client = await self._get_client()
-        resp = await client.get(DISCOVERY_URL)
+        try:
+            resp = await client.get(DISCOVERY_URL)
+        except httpx.RequestError as e:
+            raise CarelinkConnectionError(f"Discovery endpoint unreachable: {e}") from e
+
         if resp.status_code != 200:
             raise CarelinkError(f"Discovery API returned HTTP {resp.status_code}")
 
@@ -188,7 +197,11 @@ class CarelinkClient:
         if not sso_url:
             raise CarelinkError(f"SSO URL key '{sso_key}' not found in discovery configuration")
 
-        sso_resp = await client.get(sso_url)
+        try:
+            sso_resp = await client.get(sso_url)
+        except httpx.RequestError as e:
+            raise CarelinkConnectionError(f"SSO config endpoint unreachable: {e}") from e
+
         if sso_resp.status_code != 200:
             raise CarelinkError(f"SSO config returned HTTP {sso_resp.status_code}")
 
@@ -234,15 +247,18 @@ class CarelinkClient:
         headers = {}
 
         is_auth0 = self.config.get("is_auth0", False)
-        if is_auth0:
-            # Auth0 is a public native OAuth client and does not accept client_secret
-            resp = await client.post(token_url, json=body, headers=headers)
-        else:
-            if self.client_secret:
-                body["client_secret"] = self.client_secret
-            if self.mag_identifier:
-                headers["mag-identifier"] = self.mag_identifier
-            resp = await client.post(token_url, data=body, headers=headers)
+        try:
+            if is_auth0:
+                # Auth0 is a public native OAuth client and does not accept client_secret
+                resp = await client.post(token_url, json=body, headers=headers)
+            else:
+                if self.client_secret:
+                    body["client_secret"] = self.client_secret
+                if self.mag_identifier:
+                    headers["mag-identifier"] = self.mag_identifier
+                resp = await client.post(token_url, data=body, headers=headers)
+        except httpx.RequestError as e:
+            raise CarelinkConnectionError(f"Token refresh network error: {e}") from e
 
         if resp.status_code != 200:
             raise CarelinkAuthError(f"Token refresh failed HTTP {resp.status_code}: {resp.text}")
@@ -284,12 +300,15 @@ class CarelinkClient:
         if self.mag_identifier:
             headers["mag-identifier"] = self.mag_identifier
 
-        resp = await client.get(user_url, headers=headers)
-        if resp.status_code in (401, 403):
-            _LOGGER.info("Initial /users/me call returned 401/403. Attempting token refresh...")
-            await self._refresh_token()
-            headers["Authorization"] = f"Bearer {self.access_token}"
+        try:
             resp = await client.get(user_url, headers=headers)
+            if resp.status_code in (401, 403):
+                _LOGGER.info("Initial /users/me call returned 401/403. Attempting token refresh...")
+                await self._refresh_token()
+                headers["Authorization"] = f"Bearer {self.access_token}"
+                resp = await client.get(user_url, headers=headers)
+        except httpx.RequestError as e:
+            raise CarelinkConnectionError(f"User profile network error: {e}") from e
 
         if resp.status_code != 200:
             raise CarelinkError(f"Failed fetching user profile HTTP {resp.status_code}")
@@ -302,7 +321,11 @@ class CarelinkClient:
         if self.role == "carepartner":
             if not self.patient_id:
                 patients_url = self.config["baseUrlCareLink"] + "/links/patients"
-                patients_resp = await client.get(patients_url, headers=headers)
+                try:
+                    patients_resp = await client.get(patients_url, headers=headers)
+                except httpx.RequestError as e:
+                    raise CarelinkConnectionError(f"Patient list network error: {e}") from e
+
                 if patients_resp.status_code == 200:
                     active_patients = [p for p in patients_resp.json() if p.get("status") == "ACTIVE"]
                     if not active_patients:
@@ -349,12 +372,15 @@ class CarelinkClient:
         if self.mag_identifier:
             headers["mag-identifier"] = self.mag_identifier
 
-        resp = await client.post(display_url, data=request_body, headers=headers)
-        if resp.status_code in (401, 403):
-            _LOGGER.warning("Data fetch returned 401/403. Refreshing token and retrying...")
-            await self._refresh_token()
-            headers["Authorization"] = f"Bearer {self.access_token}"
+        try:
             resp = await client.post(display_url, data=request_body, headers=headers)
+            if resp.status_code in (401, 403):
+                _LOGGER.warning("Data fetch returned 401/403. Refreshing token and retrying...")
+                await self._refresh_token()
+                headers["Authorization"] = f"Bearer {self.access_token}"
+                resp = await client.post(display_url, data=request_body, headers=headers)
+        except httpx.RequestError as e:
+            raise CarelinkConnectionError(f"Data fetch network error: {e}") from e
 
         if resp.status_code != 200:
             raise CarelinkError(f"Data fetch failed HTTP {resp.status_code}: {resp.text}")

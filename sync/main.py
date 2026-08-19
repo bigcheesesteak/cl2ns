@@ -11,7 +11,14 @@ import sys
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from carelink import CarelinkClient, CarelinkError, CarelinkAuthError
+import httpx
+
+from carelink import (
+    CarelinkClient,
+    CarelinkError,
+    CarelinkAuthError,
+    CarelinkConnectionError,
+)
 from nightscout import NightscoutUploader, NightscoutError
 
 MS_TIMEZONE_MAP = {
@@ -262,10 +269,16 @@ async def main():
                     last_processed_sg_timestamp = latest_sg_ts
                     retry_count = 0
 
+        except CarelinkConnectionError as e:
+            logger.warning(f"Carelink Connection/DNS Error: {e} (will retry in next cycle)")
         except CarelinkAuthError as e:
             logger.error(f"Carelink Auth Error: {e}")
         except CarelinkError as e:
             logger.error(f"Carelink API Error: {e}")
+        except NightscoutError as e:
+            logger.error(f"Nightscout Error: {e}")
+        except httpx.RequestError as e:
+            logger.warning(f"Network Connection Error: {e} (will retry in next cycle)")
         except Exception as e:
             logger.exception(f"Unexpected error during sync cycle: {e}")
 

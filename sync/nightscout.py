@@ -158,13 +158,16 @@ class NightscoutUploader:
         now_iso = datetime.now(timezone.utc).isoformat()
 
         for item, fp in to_upload:
-            resp = await client.post(target_url, json=item)
-            if resp.status_code in (200, 201):
-                uploaded += 1
-                if fp:
-                    self.fingerprints[fp] = now_iso
-            else:
-                _LOGGER.error(f"Nightscout {endpoint} upload error HTTP {resp.status_code}: {resp.text}")
+            try:
+                resp = await client.post(target_url, json=item)
+                if resp.status_code in (200, 201):
+                    uploaded += 1
+                    if fp:
+                        self.fingerprints[fp] = now_iso
+                else:
+                    _LOGGER.error(f"Nightscout {endpoint} upload error HTTP {resp.status_code}: {resp.text}")
+            except httpx.RequestError as e:
+                _LOGGER.warning(f"Nightscout {endpoint} network error: {e}")
 
         return uploaded, skipped
 
