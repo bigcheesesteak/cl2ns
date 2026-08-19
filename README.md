@@ -11,7 +11,9 @@ This software is provided for educational and informational purposes only. It is
 - Syncs SGV (sensor glucose values) with trend direction and delta
 - Syncs Treatments: Boluses, Correction Boluses, and Meal Carbs (auto-merged if simultaneous)
 - Syncs SmartGuard Auto-Basal deliveries as dynamic Temp Basal rates
-- Uploads pump device status (battery, reservoir, IOB, suspend state)
+- Syncs BG check and fingerstick calibrations to Nightscout treatments
+- Auto-detects and uploads `Sensor Change` treatment events for Nightscout's SAGE plugin
+- Uploads complete device status: pump battery, reservoir, active insulin (IOB), suspend state, sensor age, calibration timers, and conduit status
 - SHA-256 fingerprint deduplication across all endpoints to eliminate duplicate entries
 - Adaptive polling: fast retries when waiting for new readings, then backs off
 - Automatic OAuth token refresh with persistent token storage
