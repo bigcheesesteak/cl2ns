@@ -46,7 +46,13 @@ import uuid
 from http.client import HTTPConnection
 import secrets
 from time import sleep
+
+import certifi
 import requests
+
+# Bypass restrictive custom REQUESTS_CA_BUNDLE that lacks public root certificates
+if "REQUESTS_CA_BUNDLE" in os.environ:
+    os.environ.pop("REQUESTS_CA_BUNDLE", None)
 
 import curlify
 import OpenSSL
