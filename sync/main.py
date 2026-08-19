@@ -215,12 +215,12 @@ async def main():
                            (patient_data.get("activeInsulin") or {}).get("amount", "N/A"))
 
                 # Resolve Timezone
-                env_tz = os.getenv("TIMEZONE")
+                env_tz = os.getenv("TZ") or os.getenv("TIMEZONE")
                 if env_tz:
                     try:
                         tz = ZoneInfo(env_tz)
                     except Exception:
-                        logger.warning(f"Invalid TIMEZONE '{env_tz}', falling back to UTC.")
+                        logger.warning(f"Invalid TZ/TIMEZONE '{env_tz}', falling back to UTC.")
                         tz = ZoneInfo("UTC")
                 else:
                     cl_tz = patient_data.get("clientTimeZoneName", "UTC")

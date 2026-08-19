@@ -231,17 +231,17 @@ class CarelinkClient:
             "refresh_token": self.refresh_token,
             "client_id": self.client_id,
         }
-        if self.client_secret:
-            body["client_secret"] = self.client_secret
-
         headers = {}
-        if self.mag_identifier:
-            headers["mag-identifier"] = self.mag_identifier
 
         is_auth0 = self.config.get("is_auth0", False)
         if is_auth0:
+            # Auth0 is a public native OAuth client and does not accept client_secret
             resp = await client.post(token_url, json=body, headers=headers)
         else:
+            if self.client_secret:
+                body["client_secret"] = self.client_secret
+            if self.mag_identifier:
+                headers["mag-identifier"] = self.mag_identifier
             resp = await client.post(token_url, data=body, headers=headers)
 
         if resp.status_code != 200:
@@ -298,16 +298,29 @@ class CarelinkClient:
         user_role = user_data.get("role", "PATIENT")
         self.role = "carepartner" if user_role in ("CARE_PARTNER", "CARE_PARTNER_OUS") else "patient"
 
-        # If care partner role and no patient_id specified, resolve active patient
-        if self.role == "carepartner" and not self.patient_id:
-            patients_url = self.config["baseUrlCareLink"] + "/links/patients"
-            patients_resp = await client.get(patients_url, headers=headers)
-            if patients_resp.status_code == 200:
-                for p in patients_resp.json():
-                    if p.get("status") == "ACTIVE":
-                        self.patient_id = p.get("username")
-                        _LOGGER.info(f"Resolved active Care Partner patient ID: {self.patient_id}")
-                        break
+        # If care partner role, resolve patient ID
+        if self.role == "carepartner":
+            if not self.patient_id:
+                patients_url = self.config["baseUrlCareLink"] + "/links/patients"
+                patients_resp = await client.get(patients_url, headers=headers)
+                if patients_resp.status_code == 200:
+                    active_patients = [p for p in patients_resp.json() if p.get("status") == "ACTIVE"]
+                    if not active_patients:
+                        raise CarelinkError("Care Partner account has no active linked patients.")
+
+                    self.patient_id = active_patients[0].get("username")
+                    if len(active_patients) > 1:
+                        usernames = [p.get("username") for p in active_patients]
+                        _LOGGER.warning(
+                            f"Multiple active patients found: {usernames}. Defaulting to '{self.patient_id}'. "
+                            f"Specify CARELINK_PATIENT_ID in your environment to target a specific patient."
+                        )
+                    else:
+                        _LOGGER.info(f"Auto-resolved active Care Partner patient ID: {self.patient_id}")
+                else:
+                    raise CarelinkError(f"Failed fetching patient list HTTP {patients_resp.status_code}")
+            else:
+                _LOGGER.info(f"Using configured Care Partner patient ID: {self.patient_id}")
 
         self._initialized = True
         _LOGGER.info(f"Carelink session initialized (User: {self.username}, Role: {self.role}).")

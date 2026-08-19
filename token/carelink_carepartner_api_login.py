@@ -297,8 +297,8 @@ def do_login_auth0(endpoint_config):
     print(token_data)
 
     token_data["client_id"] = token_req_data["client_id"]
-    del token_data["expires_in"]
-    del token_data["token_type"]
+    token_data.pop("expires_in", None)
+    token_data.pop("token_type", None)
 
     write_datafile(token_data, logindata_file)
     return token_data
@@ -320,12 +320,31 @@ def read_data_file(file):
 			print("failed parsing json")
 	
 		if token_data is not None:
-			required_fields = ["access_token", "refresh_token", "scope", "client_id", "client_secret", "mag-identifier"]
+			required_fields = ["access_token", "refresh_token", "client_id"]
 			for i in required_fields:
 				if i not in token_data:
 					print(f"field {i} is missing from data file")
 					return None
 	return token_data
+
+def print_compose_snippet(token_data):
+	print("\n" + "=" * 60)
+	print("  cl2ns :: Docker Compose Environment Block")
+	print("=" * 60)
+	print("    environment:")
+	print(f"      - CARELINK_TOKEN={token_data.get('access_token', '')}")
+	print(f"      - CARELINK_REFRESH_TOKEN={token_data.get('refresh_token', '')}")
+	print(f"      - CARELINK_CLIENT_ID={token_data.get('client_id', '')}")
+	if token_data.get("client_secret"):
+		print(f"      - CARELINK_CLIENT_SECRET={token_data['client_secret']}")
+	if token_data.get("mag-identifier"):
+		print(f"      - CARELINK_MAG_IDENTIFIER={token_data['mag-identifier']}")
+	print("      - NIGHTSCOUT_URL=http://your-nightscout-ip:1337")
+	print("      - NIGHTSCOUT_API_SECRET=your-nightscout-api-secret")
+	print("      - SYNC_INTERVAL=60")
+	print("      - LOG_LEVEL=INFO")
+	print("      - TZ=UTC")
+	print("=" * 60 + "\n")
 
 # config
 is_debug = False
@@ -344,7 +363,10 @@ def main(is_us_region):
 		endpoint_config = resolve_endpoint_config(discovery_url, is_us_region=is_us_region)
 		token_data = do_login(endpoint_config)
 	else:
-		print(f"token data file already exists")
+		print(f"token data file already exists ({logindata_file})")
+
+	if token_data:
+		print_compose_snippet(token_data)
 
 # Parse command line
 parser = argparse.ArgumentParser()
