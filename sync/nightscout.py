@@ -170,12 +170,12 @@ class NightscoutUploader:
 
     @staticmethod
     def _parse_timestamp(iso_str: str, target_tz: ZoneInfo) -> tuple[int, str]:
-        """Convert ISO date string to epoch ms and ISO string with target timezone."""
-        clean = re.sub(r"\.\d{3}Z$", "+00:00", iso_str)
+        """Convert Carelink local ISO date string to epoch ms and ISO string with target timezone."""
+        # Strip any trailing subseconds and timezone offsets (.000-00:00, .000Z, +00:00, etc.)
+        # because Carelink timestamps are wall-clock local device times that Medtronic suffixes with fake UTC offsets.
+        clean = re.sub(r"(\.\d+)?([+-]\d{2}:\d{2}|Z)?$", "", iso_str)
         dt = datetime.fromisoformat(clean)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        dt = dt.astimezone(target_tz)
+        dt = dt.replace(tzinfo=target_tz)
         epoch_ms = int(dt.timestamp() * 1000)
         return epoch_ms, dt.isoformat()
 
@@ -255,18 +255,11 @@ class NightscoutUploader:
                 if not ts_field:
                     continue
                     
-                # Carelink markers are often local time without a timezone indicator
-                clean = re.sub(r"\.\d{3}Z$", "+00:00", ts_field)
-                if clean.endswith("Z"):
-                    clean = clean[:-1] + "+00:00"
-                    
-                dt = datetime.fromisoformat(clean)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=tz)  # Apply target timezone
-                dt_utc = dt.astimezone(timezone.utc)
+                epoch_ms, date_str = self._parse_timestamp(ts_field, tz)
                 
                 treatment = {
-                    "created_at": dt_utc.isoformat(),
+                    "timestamp": epoch_ms,
+                    "created_at": date_str,
                     "enteredBy": USER_AGENT,
                 }
                 
