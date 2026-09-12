@@ -11,17 +11,56 @@ import sys
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from carelink import CarelinkClient, CarelinkError, CarelinkAuthError
+import httpx
+
+from carelink import (
+    CarelinkClient,
+    CarelinkError,
+    CarelinkAuthError,
+    CarelinkConnectionError,
+)
 from nightscout import NightscoutUploader, NightscoutError
 
 MS_TIMEZONE_MAP = {
     "W. Europe Standard Time": "Europe/Berlin",
     "Central European Summer Time": "Europe/Amsterdam",
+    "Central European Standard Time": "Europe/Warsaw",
+    "Central Europe Standard Time": "Europe/Budapest",
     "Romance Standard Time": "Europe/Paris",
     "GMT Standard Time": "Europe/London",
+    "Greenwich Mean Time": "Europe/London",
+    "GTB Standard Time": "Europe/Bucharest",
+    "E. Europe Standard Time": "Europe/Chisinau",
+    "FLE Standard Time": "Europe/Kiev",
+    "Turkey Standard Time": "Europe/Istanbul",
+    "Russian Standard Time": "Europe/Moscow",
     "Eastern Standard Time": "America/New_York",
     "Central Standard Time": "America/Chicago",
+    "Mountain Standard Time": "America/Denver",
     "Pacific Standard Time": "America/Los_Angeles",
+    "Alaskan Standard Time": "America/Anchorage",
+    "Hawaiian Standard Time": "Pacific/Honolulu",
+    "Atlantic Standard Time": "America/Halifax",
+    "Newfoundland Standard Time": "America/St_Johns",
+    "E. South America Standard Time": "America/Sao_Paulo",
+    "Argentina Standard Time": "America/Buenos_Aires",
+    "SA Pacific Standard Time": "America/Bogota",
+    "AUS Eastern Standard Time": "Australia/Sydney",
+    "AUS Central Standard Time": "Australia/Darwin",
+    "W. Australia Standard Time": "Australia/Perth",
+    "New Zealand Standard Time": "Pacific/Auckland",
+    "Tokyo Standard Time": "Asia/Tokyo",
+    "China Standard Time": "Asia/Shanghai",
+    "Singapore Standard Time": "Asia/Singapore",
+    "India Standard Time": "Asia/Calcutta",
+    "Israel Standard Time": "Asia/Jerusalem",
+    "Arabic Standard Time": "Asia/Baghdad",
+    "Arabian Standard Time": "Asia/Dubai",
+    "South Africa Standard Time": "Africa/Johannesburg",
+    "W. Central Africa Standard Time": "Africa/Lagos",
+    "E. Africa Standard Time": "Africa/Nairobi",
+    "tzone://Microsoft/Utc": "UTC",
+    "UTC": "UTC",
 }
 
 
@@ -183,12 +222,12 @@ async def main():
                            (patient_data.get("activeInsulin") or {}).get("amount", "N/A"))
 
                 # Resolve Timezone
-                env_tz = os.getenv("TIMEZONE")
+                env_tz = os.getenv("TZ") or os.getenv("TIMEZONE")
                 if env_tz:
                     try:
                         tz = ZoneInfo(env_tz)
                     except Exception:
-                        logger.warning(f"Invalid TIMEZONE '{env_tz}', falling back to UTC.")
+                        logger.warning(f"Invalid TZ/TIMEZONE '{env_tz}', falling back to UTC.")
                         tz = ZoneInfo("UTC")
                 else:
                     cl_tz = patient_data.get("clientTimeZoneName", "UTC")
@@ -230,10 +269,16 @@ async def main():
                     last_processed_sg_timestamp = latest_sg_ts
                     retry_count = 0
 
+        except CarelinkConnectionError as e:
+            logger.warning(f"Carelink Connection/DNS Error: {e} (will retry in next cycle)")
         except CarelinkAuthError as e:
             logger.error(f"Carelink Auth Error: {e}")
         except CarelinkError as e:
             logger.error(f"Carelink API Error: {e}")
+        except NightscoutError as e:
+            logger.error(f"Nightscout Error: {e}")
+        except httpx.RequestError as e:
+            logger.warning(f"Network Connection Error: {e} (will retry in next cycle)")
         except Exception as e:
             logger.exception(f"Unexpected error during sync cycle: {e}")
 

@@ -29,6 +29,11 @@ class CarelinkAuthError(CarelinkError):
     pass
 
 
+class CarelinkConnectionError(CarelinkError):
+    """Network, DNS, or connectivity failure."""
+    pass
+
+
 class CarelinkClient:
     """Carelink API Client with automatic token management and persistence."""
 
@@ -121,7 +126,6 @@ class CarelinkClient:
                 headers={
                     "User-Agent": USER_AGENT,
                     "Accept": "application/json",
-                    "Content-Type": "application/json",
                 },
                 timeout=HTTP_TIMEOUT_SEC,
                 follow_redirects=True,
@@ -219,7 +223,11 @@ class CarelinkClient:
     async def _discover_config(self):
         """Discover Carelink endpoints based on country/region."""
         client = await self._get_client()
-        resp = await client.get(DISCOVERY_URL)
+        try:
+            resp = await client.get(DISCOVERY_URL)
+        except httpx.RequestError as e:
+            raise CarelinkConnectionError(f"Discovery endpoint unreachable: {e}") from e
+
         if resp.status_code != 200:
             raise CarelinkError(f"Discovery API returned HTTP {resp.status_code}")
 
@@ -248,7 +256,11 @@ class CarelinkClient:
         if not sso_url:
             raise CarelinkError(f"SSO URL key '{sso_key}' not found in discovery configuration")
 
-        sso_resp = await client.get(sso_url)
+        try:
+            sso_resp = await client.get(sso_url)
+        except httpx.RequestError as e:
+            raise CarelinkConnectionError(f"SSO config endpoint unreachable: {e}") from e
+
         if sso_resp.status_code != 200:
             raise CarelinkError(f"SSO config returned HTTP {sso_resp.status_code}")
 
@@ -273,6 +285,7 @@ class CarelinkClient:
 
         token_path = sso_config.get("system_endpoints", {}).get("token_endpoint_path", "/oauth/token")
         config["token_url"] = sso_base + token_path
+        config["is_auth0"] = is_auth0
         self.config = config
         _LOGGER.debug(f"Resolved Carelink token endpoint: {config['token_url']}")
 
@@ -290,14 +303,22 @@ class CarelinkClient:
             "refresh_token": self.refresh_token,
             "client_id": self.client_id,
         }
-        if self.client_secret:
-            body["client_secret"] = self.client_secret
-
         headers = {}
-        if self.mag_identifier:
-            headers["mag-identifier"] = self.mag_identifier
 
-        resp = await client.post(token_url, data=body, headers=headers)
+        is_auth0 = self.config.get("is_auth0", False)
+        try:
+            if is_auth0:
+                # Auth0 is a public native OAuth client and does not accept client_secret
+                resp = await client.post(token_url, json=body, headers=headers)
+            else:
+                if self.client_secret:
+                    body["client_secret"] = self.client_secret
+                if self.mag_identifier:
+                    headers["mag-identifier"] = self.mag_identifier
+                resp = await client.post(token_url, data=body, headers=headers)
+        except httpx.RequestError as e:
+            raise CarelinkConnectionError(f"Token refresh network error: {e}") from e
+
         if resp.status_code != 200:
             raise CarelinkAuthError(f"Token refresh failed HTTP {resp.status_code}: {resp.text}")
 
@@ -337,12 +358,15 @@ class CarelinkClient:
         if self.mag_identifier:
             headers["mag-identifier"] = self.mag_identifier
 
-        resp = await client.get(user_url, headers=headers)
-        if resp.status_code in (401, 403):
-            _LOGGER.info("Initial /users/me call returned 401/403. Attempting token refresh...")
-            await self._refresh_token()
-            headers["Authorization"] = f"Bearer {self.access_token}"
+        try:
             resp = await client.get(user_url, headers=headers)
+            if resp.status_code in (401, 403):
+                _LOGGER.info("Initial /users/me call returned 401/403. Attempting token refresh...")
+                await self._refresh_token()
+                headers["Authorization"] = f"Bearer {self.access_token}"
+                resp = await client.get(user_url, headers=headers)
+        except httpx.RequestError as e:
+            raise CarelinkConnectionError(f"User profile network error: {e}") from e
 
         if resp.status_code in (401, 403):
             raise CarelinkAuthError(f"User profile authentication failed HTTP {resp.status_code}")
@@ -353,16 +377,33 @@ class CarelinkClient:
         user_role = user_data.get("role", "PATIENT")
         self.role = "carepartner" if user_role in ("CARE_PARTNER", "CARE_PARTNER_OUS") else "patient"
 
-        # If care partner role and no patient_id specified, resolve active patient
-        if self.role == "carepartner" and not self.patient_id:
-            patients_url = self.config["baseUrlCareLink"] + "/links/patients"
-            patients_resp = await client.get(patients_url, headers=headers)
-            if patients_resp.status_code == 200:
-                for p in patients_resp.json():
-                    if p.get("status") == "ACTIVE":
-                        self.patient_id = p.get("username")
-                        _LOGGER.info(f"Resolved active Care Partner patient ID: {self.patient_id}")
-                        break
+        # If care partner role, resolve patient ID
+        if self.role == "carepartner":
+            if not self.patient_id:
+                patients_url = self.config["baseUrlCareLink"] + "/links/patients"
+                try:
+                    patients_resp = await client.get(patients_url, headers=headers)
+                except httpx.RequestError as e:
+                    raise CarelinkConnectionError(f"Patient list network error: {e}") from e
+
+                if patients_resp.status_code == 200:
+                    active_patients = [p for p in patients_resp.json() if p.get("status") == "ACTIVE"]
+                    if not active_patients:
+                        raise CarelinkError("Care Partner account has no active linked patients.")
+
+                    self.patient_id = active_patients[0].get("username")
+                    if len(active_patients) > 1:
+                        usernames = [p.get("username") for p in active_patients]
+                        _LOGGER.warning(
+                            f"Multiple active patients found: {usernames}. Defaulting to '{self.patient_id}'. "
+                            f"Specify CARELINK_PATIENT_ID in your environment to target a specific patient."
+                        )
+                    else:
+                        _LOGGER.info(f"Auto-resolved active Care Partner patient ID: {self.patient_id}")
+                else:
+                    raise CarelinkError(f"Failed fetching patient list HTTP {patients_resp.status_code}")
+            else:
+                _LOGGER.info(f"Using configured Care Partner patient ID: {self.patient_id}")
 
         self._initialized = True
         _LOGGER.info(f"Carelink session initialized (User: {self.username}, Role: {self.role}).")
@@ -426,12 +467,15 @@ class CarelinkClient:
         if self.mag_identifier:
             headers["mag-identifier"] = self.mag_identifier
 
-        resp = await client.post(display_url, data=request_body, headers=headers)
-        if resp.status_code in (401, 403):
-            _LOGGER.warning("Data fetch returned 401/403. Refreshing token and retrying...")
-            await self._refresh_token()
-            headers["Authorization"] = f"Bearer {self.access_token}"
+        try:
             resp = await client.post(display_url, data=request_body, headers=headers)
+            if resp.status_code in (401, 403):
+                _LOGGER.warning("Data fetch returned 401/403. Refreshing token and retrying...")
+                await self._refresh_token()
+                headers["Authorization"] = f"Bearer {self.access_token}"
+                resp = await client.post(display_url, data=request_body, headers=headers)
+        except httpx.RequestError as e:
+            raise CarelinkConnectionError(f"Data fetch network error: {e}") from e
 
         if resp.status_code != 200:
             raise CarelinkError(f"Data fetch failed HTTP {resp.status_code}: {resp.text}")

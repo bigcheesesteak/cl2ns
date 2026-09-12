@@ -11,7 +11,9 @@ This software is provided for educational and informational purposes only. It is
 - Syncs SGV (sensor glucose values) with trend direction and delta
 - Syncs Treatments: Boluses, Correction Boluses, and Meal Carbs (auto-merged if simultaneous)
 - Syncs SmartGuard Auto-Basal deliveries as dynamic Temp Basal rates
-- Uploads pump device status (battery, reservoir, IOB, suspend state)
+- Syncs BG check and fingerstick calibrations to Nightscout treatments
+- Auto-detects and uploads `Sensor Change` treatment events for Nightscout's SAGE plugin
+- Uploads complete device status: pump battery, reservoir, active insulin (IOB), suspend state, sensor age, calibration timers, and conduit status
 - SHA-256 fingerprint deduplication across all endpoints to eliminate duplicate entries
 - Adaptive polling: fast retries when waiting for new readings, then backs off
 - Automatic OAuth token refresh with persistent token storage
@@ -25,14 +27,14 @@ You need a set of OAuth tokens from the Carelink mobile app flow. You can genera
 1. Navigate to the `token` directory: `cd token`
 2. Install the required dependencies: `pip install -r requirements.txt`
 3. Run the login script: `python carelink_carepartner_api_login.py` (add `--us` flag if you are in the US region)
-4. A Firefox window will open temporarily to solve a Captcha. Once completed, a `logindata.json` file will be generated.
+4. A Firefox window will open temporarily to solve a Captcha. Once completed, the script prints the exact Docker Compose environment block and saves `logindata.json`.
 
-The `logindata.json` file will contain:
+For modern Carelink Auth0 logins (EU and US default), the required credentials are:
 - `access_token` (JWT)
 - `refresh_token`
 - `client_id`
-- `client_secret` (if applicable)
-- `mag-identifier`
+
+*(Note: `client_secret` and `mag-identifier` are only generated for legacy CA MAG gateways and are not needed or used for Auth0 accounts).*
 
 ## Quick Start
 
@@ -69,15 +71,15 @@ All configuration is done via environment variables. Copy `.env.example` to `.en
 |----------|----------|-------------|
 | `CARELINK_TOKEN` | Yes | JWT access token from Carelink OAuth flow |
 | `CARELINK_REFRESH_TOKEN` | Yes | Refresh token (single-use, auto-rotated) |
-| `CARELINK_CLIENT_ID` | Yes | OAuth client ID |
-| `CARELINK_CLIENT_SECRET` | No | OAuth client secret (if available) |
-| `CARELINK_PATIENT_ID` | No | Required only for care partner accounts |
-| `CARELINK_MAG_IDENTIFIER` | No | Legacy session identifier, usually not needed |
+| `CARELINK_CLIENT_ID` | Yes | OAuth client ID (`PeAhkbhQWlQRxJiQxWfcFBiGus1lxfe9` on Auth0) |
+| `CARELINK_PATIENT_ID` | No | Target patient username. Auto-detected if omitted for single-patient accounts. |
+| `CARELINK_CLIENT_SECRET` | No | Legacy CA MAG gateway only. Omit for Auth0 accounts. |
+| `CARELINK_MAG_IDENTIFIER` | No | Legacy CA MAG gateway only. Omit for Auth0 accounts. |
 | `NIGHTSCOUT_URL` | Yes | Full URL of your Nightscout instance |
 | `NIGHTSCOUT_API_SECRET` | Yes | Nightscout API secret |
 | `SYNC_INTERVAL` | No | Base polling interval in seconds (default: `60`) |
 | `LOG_LEVEL` | No | `DEBUG`, `INFO`, `WARNING`, or `ERROR` (default: `INFO`) |
-| `TIMEZONE` | No | IANA timezone override (e.g. `Europe/Brussels`). Auto-detected from Carelink if not set. |
+| `TZ` | No | IANA timezone override (e.g. `America/New_York` or `UTC`). Auto-detected from Carelink if not set. |
 
 ## How It Works
 

@@ -158,24 +158,27 @@ class NightscoutUploader:
         now_iso = datetime.now(timezone.utc).isoformat()
 
         for item, fp in to_upload:
-            resp = await client.post(target_url, json=item)
-            if resp.status_code in (200, 201):
-                uploaded += 1
-                if fp:
-                    self.fingerprints[fp] = now_iso
-            else:
-                _LOGGER.error(f"Nightscout {endpoint} upload error HTTP {resp.status_code}: {resp.text}")
+            try:
+                resp = await client.post(target_url, json=item)
+                if resp.status_code in (200, 201):
+                    uploaded += 1
+                    if fp:
+                        self.fingerprints[fp] = now_iso
+                else:
+                    _LOGGER.error(f"Nightscout {endpoint} upload error HTTP {resp.status_code}: {resp.text}")
+            except httpx.RequestError as e:
+                _LOGGER.warning(f"Nightscout {endpoint} network error: {e}")
 
         return uploaded, skipped
 
     @staticmethod
     def _parse_timestamp(iso_str: str, target_tz: ZoneInfo) -> tuple[int, str]:
-        """Convert ISO date string to epoch ms and ISO string with target timezone."""
-        clean = re.sub(r"\.\d{3}Z$", "+00:00", iso_str)
+        """Convert Carelink local ISO date string to epoch ms and ISO string with target timezone."""
+        # Strip any trailing subseconds and timezone offsets (.000-00:00, .000Z, +00:00, etc.)
+        # because Carelink timestamps are wall-clock local device times that Medtronic suffixes with fake UTC offsets.
+        clean = re.sub(r"(\.\d+)?([+-]\d{2}:\d{2}|Z)?$", "", iso_str)
         dt = datetime.fromisoformat(clean)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        dt = dt.astimezone(target_tz)
+        dt = dt.replace(tzinfo=target_tz)
         epoch_ms = int(dt.timestamp() * 1000)
         return epoch_ms, dt.isoformat()
 
@@ -224,7 +227,7 @@ class NightscoutUploader:
         return entries
 
     def _build_device_status(self, data: dict) -> list:
-        """Build Nightscout devicestatus object."""
+        """Build Nightscout devicestatus object with pump, sensor, and conduit details."""
         model = (data.get("medicalDeviceInformation") or {}).get("modelNumber", "Medtronic Pump")
         battery_pct = data.get("pumpBatteryLevelPercent", data.get("conduitBatteryLevel", 100))
         reservoir = data.get("reservoirRemainingUnits", data.get("reservoirAmount", 0.0))
@@ -232,41 +235,100 @@ class NightscoutUploader:
         status_msg = data.get("systemStatusMessage", "Normal")
         suspended = data.get("pumpSuspended", False)
 
-        return [{
+        # Sensor details
+        sensor_state = data.get("sensorState", "NO_ERROR_MESSAGE")
+        sensor_dur_hours = data.get("sensorDurationHours")
+        sensor_dur_mins = data.get("sensorDurationMinutes")
+        if sensor_dur_mins is not None and sensor_dur_hours is None:
+            sensor_dur_hours = round(sensor_dur_mins / 60, 1)
+        calib_hours = data.get("timeToNextCalibHours")
+
+        # Conduit / Uploader details
+        conduit_battery = data.get("conduitBatteryLevel")
+        conduit_in_range = data.get("conduitInRange")
+
+        dev_status = {
             "device": model,
             "pump": {
-                "battery": {"status": "OK", "voltage": battery_pct},
+                "battery": {"status": "OK", "voltage": battery_pct, "percent": battery_pct},
                 "reservoir": reservoir,
                 "iob": {"bolusiob": iob_amount},
                 "status": {"status": status_msg, "suspended": suspended},
+            },
+            "sensor": {
+                "sensorState": sensor_state,
             }
-        }]
+        }
 
-    def _build_treatments(self, markers: list, tz: ZoneInfo) -> list:
-        """Transform Carelink markers into Nightscout treatments (bolus, carbs, basal)."""
+        if sensor_dur_hours is not None:
+            # Medtronic Carelink reports remaining sensor life in sensorDurationHours/Minutes (countdown to expiry)
+            dev_status["sensor"]["sensorRemainingHours"] = sensor_dur_hours
+            dev_status["sensor"]["sensorRemainingDays"] = round(sensor_dur_hours / 24, 1)
+            dev_status["sensor"]["sensorAgeHours"] = max(0.0, round(168 - sensor_dur_hours, 1))
+            dev_status["sensor"]["sensorAgeDays"] = max(0.0, round(7.0 - (sensor_dur_hours / 24), 1))
+
+        if sensor_dur_mins is not None:
+            dev_status["sensor"]["sensorRemainingMinutes"] = sensor_dur_mins
+
+        if calib_hours is not None:
+            dev_status["sensor"]["timeToNextCalibHours"] = calib_hours
+
+        if conduit_battery is not None or conduit_in_range is not None:
+            dev_status["uploader"] = {
+                "battery": conduit_battery,
+                "inRange": conduit_in_range,
+            }
+
+        return [dev_status]
+
+    def _build_treatments(self, markers: list, data: dict, tz: ZoneInfo) -> list:
+        """Transform Carelink markers into Nightscout treatments (bolus, carbs, basal, sensor changes, BG checks)."""
         treatments = []
+
+        # 1. Automatic Sensor Change / Start Event
+        # In Carelink, sensorDurationMinutes is the remaining countdown time on the 7-day (10080 min) lifespan
+        dur_mins = data.get("sensorDurationMinutes")
+        dur_hours = data.get("sensorDurationHours")
+        if dur_mins is None and dur_hours is not None:
+            dur_mins = int(dur_hours * 60)
+
+        sgs = data.get("sgs", [])
+        ref_ts = (sgs[-1]["timestamp"] if sgs else None) or data.get("medicalDeviceTime")
+
+        if dur_mins is not None and dur_mins > 0 and ref_ts:
+            try:
+                epoch_ms, _ = self._parse_timestamp(ref_ts, tz)
+                reading_dt = datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)
+                # Calculate elapsed time from the 7-day lifespan (7 * 1440 = 10080 minutes)
+                elapsed_mins = max(0, 10080 - dur_mins)
+                sensor_start_utc = reading_dt - timedelta(minutes=elapsed_mins)
+                sensor_start_local = sensor_start_utc.astimezone(tz)
+                treatments.append({
+                    "eventType": "Sensor Change",
+                    "created_at": sensor_start_local.isoformat(),
+                    "timestamp": int(sensor_start_utc.timestamp() * 1000),
+                    "enteredBy": USER_AGENT,
+                    "notes": f"Medtronic Sensor (Inserted {round(elapsed_mins / 1440, 1)}d ago, {round(dur_mins / 60, 1)}h remaining)",
+                })
+            except Exception as e:
+                _LOGGER.debug(f"Could not calculate sensor start treatment: {e}")
+
+        # 2. Carelink Event Markers
         for m in markers:
             try:
                 m_type = m.get("type", "")
-                if m_type not in ["INSULIN", "MEAL", "AUTO_BASAL_DELIVERY"]:
+                if m_type not in ["INSULIN", "MEAL", "AUTO_BASAL_DELIVERY", "CALIBRATION", "BG_READING", "SENSOR_CHANGE", "SENSOR_START"]:
                     continue
 
                 ts_field = m.get("dateTime") or m.get("timestamp")
                 if not ts_field:
                     continue
                     
-                # Carelink markers are often local time without a timezone indicator
-                clean = re.sub(r"\.\d{3}Z$", "+00:00", ts_field)
-                if clean.endswith("Z"):
-                    clean = clean[:-1] + "+00:00"
-                    
-                dt = datetime.fromisoformat(clean)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=tz)  # Apply target timezone
-                dt_utc = dt.astimezone(timezone.utc)
+                epoch_ms, date_str = self._parse_timestamp(ts_field, tz)
                 
                 treatment = {
-                    "created_at": dt_utc.isoformat(),
+                    "timestamp": epoch_ms,
+                    "created_at": date_str,
                     "enteredBy": USER_AGENT,
                 }
                 
@@ -284,8 +346,21 @@ class NightscoutUploader:
                     treatment["duration"] = 5
                     amount = float(data_vals.get("bolusAmount", 0))
                     treatment["absolute"] = round(amount * 12, 3)
+                elif m_type in ("CALIBRATION", "BG_READING"):
+                    treatment["eventType"] = "BG Check"
+                    treatment["glucose"] = float(data_vals.get("amount", data_vals.get("sg", 0)))
+                    treatment["glucoseType"] = "Finger"
+                elif m_type in ("SENSOR_CHANGE", "SENSOR_START"):
+                    treatment["eventType"] = "Sensor Change"
+                    treatment["notes"] = "Medtronic Sensor Changed"
 
-                if treatment.get("insulin", 0) > 0 or treatment.get("carbs", 0) > 0 or treatment.get("absolute", 0) > 0:
+                if (
+                    treatment.get("insulin", 0) > 0
+                    or treatment.get("carbs", 0) > 0
+                    or treatment.get("absolute", 0) > 0
+                    or treatment.get("glucose", 0) > 0
+                    or treatment.get("eventType") == "Sensor Change"
+                ):
                     treatments.append(treatment)
             except Exception as e:
                 _LOGGER.debug(f"Skipping unparseable marker: {e}")
@@ -293,7 +368,7 @@ class NightscoutUploader:
         # Merge meals and boluses that occur at the exact same timestamp
         merged = {}
         for t in treatments:
-            key = t["created_at"]
+            key = f"{t['eventType']}_{t['created_at']}"
             if key not in merged:
                 merged[key] = t
             else:
@@ -301,7 +376,8 @@ class NightscoutUploader:
                     merged[key]["carbs"] = t["carbs"]
                 if "insulin" in t:
                     merged[key]["insulin"] = t["insulin"]
-                merged[key]["eventType"] = "Meal Bolus"
+                if t.get("eventType") == "Carb Correction" and merged[key].get("eventType") == "Correction Bolus":
+                    merged[key]["eventType"] = "Meal Bolus"
                 
         return list(merged.values())
 
@@ -312,7 +388,7 @@ class NightscoutUploader:
 
         results = {}
 
-        # 1. Device Status
+        # 1. Device Status (Pump, Sensor, Conduit)
         ds_items = self._build_device_status(data)
         ds_up, ds_skip = await self._post_batch("devicestatus", ds_items)
         results["devicestatus"] = (ds_up, ds_skip)
@@ -324,10 +400,10 @@ class NightscoutUploader:
             sgv_up, sgv_skip = await self._post_batch("entries", sgv_items)
             results["entries"] = (sgv_up, sgv_skip)
 
-        # 3. Treatments (Bolus/Carbs/Basal)
+        # 3. Treatments (Bolus/Carbs/Basal/Sensor Change/BG Checks)
         markers = data.get("markers", [])
-        if markers:
-            trt_items = self._build_treatments(markers, tz)
+        trt_items = self._build_treatments(markers, data, tz)
+        if trt_items:
             trt_up, trt_skip = await self._post_batch("treatments", trt_items)
             results["treatments"] = (trt_up, trt_skip)
 
