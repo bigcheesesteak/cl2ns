@@ -51,6 +51,13 @@ class CarelinkClient:
         self.data_dir = data_dir
         self.token_file_path = os.path.join(data_dir, "carelink_tokens.json")
 
+        # Keep original environment credentials for startup fallback
+        self._env_access_token = access_token
+        self._env_refresh_token = refresh_token
+        self._env_client_id = client_id
+        self._env_client_secret = client_secret
+        self._env_mag_identifier = mag_identifier
+
         self.username = None
         self.country = None
         self.role = None
@@ -58,6 +65,55 @@ class CarelinkClient:
         self.config = None
         self._http_client = None
         self._initialized = False
+
+    def _apply_env_tokens(self):
+        """Restore tokens and credentials from environment variables."""
+        self.access_token = self._env_access_token
+        self.refresh_token = self._env_refresh_token
+        self.client_id = self._env_client_id
+        self.client_secret = self._env_client_secret
+        self.mag_identifier = self._env_mag_identifier
+        self.token_expires_at = None
+        self.username = None
+        self.country = None
+        self.role = None
+        self.config = None
+
+    def _are_env_tokens_new(self, volume_access_token: str = None) -> bool:
+        """Check if environment tokens are present, valid, and newer than volume tokens."""
+        if not self._env_access_token or not self._env_refresh_token:
+            return False
+
+        if volume_access_token and self._env_access_token == volume_access_token:
+            return False
+
+        try:
+            env_payload = self._parse_jwt(self._env_access_token)
+        except Exception:
+            return False
+
+        env_iat = env_payload.get("iat", 0)
+        env_exp = env_payload.get("exp", 0)
+
+        if volume_access_token:
+            try:
+                vol_payload = self._parse_jwt(volume_access_token)
+                vol_iat = vol_payload.get("iat", 0)
+                vol_exp = vol_payload.get("exp", 0)
+
+                # Prefer iat (issued-at) timestamp comparison
+                if env_iat and vol_iat:
+                    return env_iat > vol_iat
+                # Otherwise compare expiration timestamp
+                if env_exp and vol_exp:
+                    return env_exp > vol_exp
+            except Exception:
+                # Volume token was not a parseable JWT
+                pass
+
+        # If volume token had no valid timestamps, only accept env token if not expired
+        now_ts = datetime.now(timezone.utc).timestamp()
+        return env_exp > now_ts
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._http_client is None or self._http_client.is_closed:
@@ -85,7 +141,10 @@ class CarelinkClient:
 
         try:
             async with aiofiles.open(self.token_file_path, "r") as f:
-                data = json.loads(await f.read())
+                content = await f.read()
+                if not content.strip():
+                    return False
+                data = json.loads(content)
 
             self.access_token = data.get("access_token", self.access_token)
             self.refresh_token = data.get("refresh_token", self.refresh_token)
@@ -262,9 +321,8 @@ class CarelinkClient:
             _LOGGER.info("Access token near expiration. Triggering refresh...")
             await self._refresh_token()
 
-    async def authenticate(self):
-        """Initialize session and fetch user profile/role."""
-        await self.load_tokens()
+    async def _setup_session(self):
+        """Extract token metadata, validate/refresh token, discover config, and resolve role."""
         self._extract_token_metadata()
         await self.ensure_valid_token()
         await self._discover_config()
@@ -286,7 +344,9 @@ class CarelinkClient:
             headers["Authorization"] = f"Bearer {self.access_token}"
             resp = await client.get(user_url, headers=headers)
 
-        if resp.status_code != 200:
+        if resp.status_code in (401, 403):
+            raise CarelinkAuthError(f"User profile authentication failed HTTP {resp.status_code}")
+        elif resp.status_code != 200:
             raise CarelinkError(f"Failed fetching user profile HTTP {resp.status_code}")
 
         user_data = resp.json()
@@ -306,6 +366,41 @@ class CarelinkClient:
 
         self._initialized = True
         _LOGGER.info(f"Carelink session initialized (User: {self.username}, Role: {self.role}).")
+
+    async def authenticate(self):
+        """Initialize session and fetch user profile/role.
+
+        On startup, if tokens in volume fail authentication, falls back to environment
+        variables ONLY IF fresh/newer tokens are detected in the environment.
+        """
+        has_volume_tokens = await self.load_tokens()
+        volume_access_token = self.access_token if has_volume_tokens else None
+
+        if has_volume_tokens:
+            try:
+                await self._setup_session()
+                return
+            except CarelinkAuthError as auth_err:
+                _LOGGER.warning(
+                    f"Startup authentication with volume tokens failed: {auth_err}. "
+                    "Checking if fresh tokens are available in environment variables..."
+                )
+                if self._are_env_tokens_new(volume_access_token):
+                    _LOGGER.info(
+                        "Fresh environment tokens detected. Discarding stale volume tokens and re-authenticating with environment variables..."
+                    )
+                    self._apply_env_tokens()
+                    await self._setup_session()
+                    await self.save_tokens()
+                    return
+                else:
+                    _LOGGER.error(
+                        "Environment tokens are not newer than stored volume tokens; skipping fallback to prevent using stale credentials."
+                    )
+                    raise auth_err
+        else:
+            await self._setup_session()
+            await self.save_tokens()
 
     async def fetch_recent_data(self) -> dict:
         """Fetch recent pump/sensor data from Carelink /display/message."""

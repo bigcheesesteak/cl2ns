@@ -121,8 +121,9 @@ Everything is reported through container stdout. Example output:
 Carelink refresh tokens are **single-use**. After each refresh, the new token pair is persisted to `/data/carelink_tokens.json` inside the container volume. This means:
 
 - The container survives restarts without re-authentication
-- The initial env var tokens are only used on first boot
-- If the volume is lost, you need to generate new tokens
+- The initial env var tokens are used on first boot
+- **Handling prolonged disconnections**: If the container is offline for too long and the volume tokens expire/stop working, generate fresh tokens using `token/carelink_carepartner_api_login.py`, update `.env`, and restart the container (`docker compose restart cl2ns`). On startup, cl2ns checks if the volume tokens fail authentication; if fresh tokens with newer timestamps are detected in the environment variables, it will automatically adopt them and update the volume.
+- To prevent using stale tokens when Medtronic services are temporarily unreachable, fallback to `.env` is only attempted on startup and only when the `.env` tokens are verified to be newer than the volume's stored tokens.
 
 ## Troubleshooting
 
