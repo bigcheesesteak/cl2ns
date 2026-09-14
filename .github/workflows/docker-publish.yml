@@ -2,7 +2,7 @@ name: Publish Docker Image
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main" ]
   release:
     types: [published]
 
@@ -33,8 +33,16 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            # When pushing to main: publish "edge" and a build stamp for testing
+            type=edge,branch=main
+            type=raw,value={{date 'YYYY.MM.DD'}}-${{ github.run_number }},enable=${{ github.event_name == 'push' }}
+
+            # When publishing a GitHub Release (e.g., v1.0.0):
+            # Updates 'latest' and creates 1.0.0, 1.0, and 1
+            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
             type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
