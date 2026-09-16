@@ -1,5 +1,7 @@
 # cl2ns (Carelink to Nightscout)
 
+[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/bigcheesesteak)
+
 **cl2ns** (Carelink to Nightscout) is a lightweight Docker container that syncs Medtronic Carelink pump and sensor data to a [Nightscout](https://nightscout.github.io/) instance. No UI, no database, no web server -- just a single background daemon that polls Carelink and uploads to Nightscout.
 
 ## ⚠️ Disclaimer
