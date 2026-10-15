@@ -172,11 +172,19 @@ class NightscoutUploader:
         return uploaded, skipped
 
     @staticmethod
-    def _parse_timestamp(iso_str: str, target_tz: ZoneInfo) -> tuple[int, str]:
-        """Convert Carelink local ISO date string to epoch ms and ISO string with target timezone."""
+    def _parse_timestamp(iso_str: str | int | float, target_tz: ZoneInfo) -> tuple[int, str]:
+        """Convert Carelink local ISO date string or epoch ms to epoch ms and ISO string with target timezone."""
+        if isinstance(iso_str, (int, float)):
+            dt = datetime.fromtimestamp(iso_str / 1000, tz=timezone.utc).astimezone(target_tz)
+            return int(iso_str), dt.isoformat()
+        if isinstance(iso_str, str) and iso_str.isdigit():
+            epoch_val = int(iso_str)
+            dt = datetime.fromtimestamp(epoch_val / 1000, tz=timezone.utc).astimezone(target_tz)
+            return epoch_val, dt.isoformat()
+
         # Strip any trailing subseconds and timezone offsets (.000-00:00, .000Z, +00:00, etc.)
         # because Carelink timestamps are wall-clock local device times that Medtronic suffixes with fake UTC offsets.
-        clean = re.sub(r"(\.\d+)?([+-]\d{2}:\d{2}|Z)?$", "", iso_str)
+        clean = re.sub(r"(\.\d+)?([+-]\d{2}:\d{2}|Z)?$", "", str(iso_str))
         dt = datetime.fromisoformat(clean)
         dt = dt.replace(tzinfo=target_tz)
         epoch_ms = int(dt.timestamp() * 1000)
@@ -184,11 +192,16 @@ class NightscoutUploader:
 
     def _build_sgv_entries(self, sgs: list, tz: ZoneInfo) -> list:
         """Transform Carelink SGS array into Nightscout SGV entries."""
-        valid_sgs = [s for s in sgs if s.get("sensorState") == "NO_ERROR_MESSAGE"]
+        valid_sgs = [
+            s for s in sgs
+            if s.get("sensorState") == "NO_ERROR_MESSAGE"
+            and (s.get("timestamp") or s.get("datetime") or s.get("dateTime"))
+        ]
         entries = []
 
         for idx, sg in enumerate(valid_sgs):
-            epoch_ms, date_str = self._parse_timestamp(sg["timestamp"], tz)
+            ts_str = sg.get("timestamp") or sg.get("datetime") or sg.get("dateTime")
+            epoch_ms, date_str = self._parse_timestamp(ts_str, tz)
             trend = "Flat"
             delta = 0
 
@@ -293,7 +306,21 @@ class NightscoutUploader:
             dur_mins = int(dur_hours * 60)
 
         sgs = data.get("sgs", [])
-        ref_ts = (sgs[-1]["timestamp"] if sgs else None) or data.get("medicalDeviceTime")
+        ref_ts = None
+        for s in reversed(sgs):
+            ts = s.get("timestamp") or s.get("datetime") or s.get("dateTime")
+            if ts:
+                ref_ts = ts
+                break
+
+        if not ref_ts:
+            last_sg = data.get("lastSG") or {}
+            ref_ts = (
+                last_sg.get("timestamp")
+                or last_sg.get("datetime")
+                or last_sg.get("dateTime")
+                or data.get("medicalDeviceTime")
+            )
 
         if dur_mins is not None and dur_mins > 0 and ref_ts:
             try:
@@ -320,7 +347,7 @@ class NightscoutUploader:
                 if m_type not in ["INSULIN", "MEAL", "AUTO_BASAL_DELIVERY", "CALIBRATION", "BG_READING", "SENSOR_CHANGE", "SENSOR_START"]:
                     continue
 
-                ts_field = m.get("dateTime") or m.get("timestamp")
+                ts_field = m.get("dateTime") or m.get("timestamp") or m.get("datetime")
                 if not ts_field:
                     continue
                     
