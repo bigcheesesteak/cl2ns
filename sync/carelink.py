@@ -385,8 +385,9 @@ class CarelinkClient:
 
         if self.role == "patient":
             self.patient_username = self.username
-            if user_data.get("id"):
-                self.patient_id = str(user_data["id"])
+            resolved_id = user_data.get("id") or user_data.get("accountId")
+            if resolved_id:
+                self.patient_id = str(resolved_id)
             elif not self.patient_id:
                 self.patient_id = self.username
             _LOGGER.info(
@@ -436,7 +437,7 @@ class CarelinkClient:
                     )
 
             self.patient_username = matched_patient.get("username")
-            p_id = matched_patient.get("id")
+            p_id = matched_patient.get("id") or matched_patient.get("accountId")
             if p_id is not None:
                 self.patient_id = str(p_id)
             else:
