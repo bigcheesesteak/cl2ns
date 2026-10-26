@@ -55,6 +55,7 @@ class CarelinkClient:
         self.client_secret = client_secret
         self.mag_identifier = mag_identifier
         self.patient_id = patient_id
+        self.patient_username = None
         self.data_dir = data_dir
         self.token_file_path = os.path.join(data_dir, "carelink_tokens.json")
 
@@ -64,6 +65,7 @@ class CarelinkClient:
         self._env_client_id = client_id
         self._env_client_secret = client_secret
         self._env_mag_identifier = mag_identifier
+        self._env_patient_id = patient_id
 
         self.username = None
         self.country = None
@@ -80,6 +82,8 @@ class CarelinkClient:
         self.client_id = self._env_client_id
         self.client_secret = self._env_client_secret
         self.mag_identifier = self._env_mag_identifier
+        self.patient_id = self._env_patient_id
+        self.patient_username = None
         self.token_expires_at = None
         self.username = None
         self.country = None
@@ -379,37 +383,60 @@ class CarelinkClient:
         user_role = user_data.get("role", "PATIENT")
         self.role = "carepartner" if user_role in ("CARE_PARTNER", "CARE_PARTNER_OUS") else "patient"
 
-        # Resolve patient ID from user profile if not already set
-        if not self.patient_id and user_data.get("id"):
-            self.patient_id = str(user_data["id"])
+        if self.role == "patient":
+            self.patient_username = self.username
+            if not self.patient_id and user_data.get("id"):
+                self.patient_id = str(user_data["id"])
+            elif not self.patient_id:
+                self.patient_id = self.username
+        else:
+            # Query linked patients for Care Partner role
+            patients_url = self.config["baseUrlCareLink"] + "/links/patients"
+            try:
+                patients_resp = await client.get(patients_url, headers=headers)
+            except httpx.RequestError as e:
+                raise CarelinkConnectionError(f"Patient list network error: {e}") from e
 
-        # If care partner role, resolve patient ID
-        if self.role == "carepartner":
-            if not self.patient_id:
-                patients_url = self.config["baseUrlCareLink"] + "/links/patients"
-                try:
-                    patients_resp = await client.get(patients_url, headers=headers)
-                except httpx.RequestError as e:
-                    raise CarelinkConnectionError(f"Patient list network error: {e}") from e
+            if patients_resp.status_code != 200:
+                raise CarelinkError(f"Failed fetching patient list HTTP {patients_resp.status_code}")
 
-                if patients_resp.status_code == 200:
-                    active_patients = [p for p in patients_resp.json() if p.get("status") == "ACTIVE"]
-                    if not active_patients:
-                        raise CarelinkError("Care Partner account has no active linked patients.")
+            patients_list = patients_resp.json()
+            active_patients = [p for p in patients_list if p.get("status") == "ACTIVE"]
+            if not active_patients:
+                active_patients = patients_list
 
-                    self.patient_id = active_patients[0].get("username")
-                    if len(active_patients) > 1:
-                        usernames = [p.get("username") for p in active_patients]
-                        _LOGGER.warning(
-                            f"Multiple active patients found: {usernames}. Defaulting to '{self.patient_id}'. "
-                            f"Specify CARELINK_PATIENT_ID in your environment to target a specific patient."
-                        )
-                    else:
-                        _LOGGER.info(f"Auto-resolved active Care Partner patient ID: {self.patient_id}")
-                else:
-                    raise CarelinkError(f"Failed fetching patient list HTTP {patients_resp.status_code}")
+            if not active_patients:
+                raise CarelinkError("Care Partner account has no linked patients.")
+
+            matched_patient = None
+            if self.patient_id:
+                target_str = str(self.patient_id).strip().lower()
+                for p in active_patients:
+                    p_user = str(p.get("username", "")).strip().lower()
+                    p_id = str(p.get("id", "")).strip().lower()
+                    if target_str in (p_user, p_id):
+                        matched_patient = p
+                        break
+                if not matched_patient:
+                    _LOGGER.warning(
+                        f"Configured CARELINK_PATIENT_ID '{self.patient_id}' not found in active patients. "
+                        f"Available: {[p.get('username') for p in active_patients]}. Defaulting to first active patient."
+                    )
+                    matched_patient = active_patients[0]
             else:
-                _LOGGER.info(f"Using configured Care Partner patient ID: {self.patient_id}")
+                matched_patient = active_patients[0]
+                if len(active_patients) > 1:
+                    usernames = [p.get("username") for p in active_patients]
+                    _LOGGER.warning(
+                        f"Multiple active patients found: {usernames}. Defaulting to '{matched_patient.get('username')}'. "
+                        "Specify CARELINK_PATIENT_ID in your environment to target a specific patient."
+                    )
+
+            self.patient_username = matched_patient.get("username")
+            self.patient_id = str(matched_patient.get("id") or matched_patient.get("username"))
+            _LOGGER.info(
+                f"Resolved Care Partner target patient: username='{self.patient_username}', id='{self.patient_id}'"
+            )
 
         self._initialized = True
         _LOGGER.info(f"Carelink session initialized (User: {self.username}, Role: {self.role}).")
@@ -460,8 +487,8 @@ class CarelinkClient:
         display_url = self.config["baseUrlCumulus"] + "/display/message"
 
         payload_obj = {"username": self.username, "role": self.role}
-        if self.role == "carepartner" and self.patient_id:
-            payload_obj["patientId"] = self.patient_id
+        if self.role == "carepartner":
+            payload_obj["patientId"] = self.patient_username or self.patient_id
 
         request_body = json.dumps(payload_obj)
 
@@ -483,10 +510,14 @@ class CarelinkClient:
         except httpx.RequestError as e:
             raise CarelinkConnectionError(f"Data fetch network error: {e}") from e
 
+        if resp.status_code == 204:
+            _LOGGER.info("Carelink /display/message returned 204 No Content (no new pump telemetry available).")
+            return {}
+
         if resp.status_code != 200:
             raise CarelinkError(f"Data fetch failed HTTP {resp.status_code}: {resp.text}")
 
-        data = resp.json()
+        data = resp.json() if resp.text else {}
         return data.get("patientData", data)
 
     async def fetch_device_settings_pdf(self) -> bytes | None:
@@ -510,7 +541,7 @@ class CarelinkClient:
         client_time = now.isoformat()
         start_date = (now - timedelta(days=14)).strftime("%Y-%m-%d")
         end_date = (now - timedelta(days=1)).strftime("%Y-%m-%d")
-        patient_id = str(self.patient_id or self.username or "")
+        patient_id = str(self.patient_id or self.patient_username or self.username or "")
 
         payload = {
             "clientTime": client_time,
