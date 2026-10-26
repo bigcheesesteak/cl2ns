@@ -8,6 +8,7 @@ import base64
 import json
 import logging
 import os
+from urllib.parse import urlparse
 from datetime import datetime, timedelta, timezone
 import aiofiles
 import httpx
@@ -497,7 +498,9 @@ class CarelinkClient:
             if self.config and "baseUrlCareLink" in self.config
             else "https://carelink.minimed.eu"
         )
-        reports_base = base_url.rstrip("/") + "/patient/reports"
+        parsed = urlparse(base_url)
+        origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else "https://carelink.minimed.eu"
+        reports_base = f"{origin}/patient/reports"
 
         now = datetime.now(timezone.utc)
         client_time = now.isoformat()
