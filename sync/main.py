@@ -171,6 +171,7 @@ async def main():
             pass
 
     last_processed_sg_timestamp = None
+    last_profile_sync = None
     retry_count = 0
     max_fast_retries = 3
     fast_retry_interval_sec = 60
@@ -236,6 +237,27 @@ async def main():
                         tz = ZoneInfo(tz_name)
                     except Exception:
                         tz = ZoneInfo("UTC")
+
+                # Profile Synchronization (Startup & Daily every 24h)
+                if last_profile_sync is None or (now_utc - last_profile_sync).total_seconds() > 86400:
+                    try:
+                        logger.info("Executing device settings profile sync...")
+                        pdf_bytes = await cl_client.fetch_device_settings_pdf()
+                        if pdf_bytes:
+                            profile_doc = ns_uploader.parse_device_settings_pdf(pdf_bytes, str(tz))
+                            if profile_doc:
+                                success = await ns_uploader.upload_profile(profile_doc)
+                                if success:
+                                    last_profile_sync = now_utc
+                                    logger.info(f"Nightscout profile sync completed (Profile: {profile_doc.get('defaultProfile')}).")
+                                else:
+                                    logger.warning("Failed to upload profile document to Nightscout.")
+                            else:
+                                logger.warning("Failed to parse device settings PDF into Nightscout profile.")
+                        else:
+                            logger.warning("Failed to fetch device settings PDF from Carelink.")
+                    except Exception as e:
+                        logger.warning(f"Error during device settings profile sync: {e}")
 
                 # Upload to Nightscout
                 upload_stats = await ns_uploader.upload_carelink_payload(patient_data, tz)

@@ -3,6 +3,7 @@
 Lightweight, async client for Medtronic Carelink Cloud API.
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -482,3 +483,133 @@ class CarelinkClient:
 
         data = resp.json()
         return data.get("patientData", data)
+
+    async def fetch_device_settings_pdf(self) -> bytes | None:
+        """Request and download the Device Settings PDF report in English from CareLink."""
+        if not self._initialized:
+            await self.authenticate()
+        else:
+            await self.ensure_valid_token()
+
+        client = await self._get_client()
+        base_url = (
+            self.config.get("baseUrlCareLink")
+            if self.config and "baseUrlCareLink" in self.config
+            else "https://carelink.minimed.eu"
+        )
+        reports_base = base_url.rstrip("/") + "/patient/reports"
+
+        now = datetime.now(timezone.utc)
+        client_time = now.isoformat()
+        start_date = (now - timedelta(days=14)).strftime("%Y-%m-%d")
+        end_date = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        patient_id = self.patient_id or ""
+
+        payload = {
+            "clientTime": client_time,
+            "dailyDetailReportDays": [],
+            "patientId": patient_id,
+            "reportFileFormat": "PDF",
+            "reportShowAdherence": False,
+            "reportShowAssessmentAndProgress": False,
+            "reportShowBolusWizardFoodBolus": False,
+            "reportShowDashBoard": False,
+            "reportShowDataTable": False,
+            "reportShowDeviceSettings": True,
+            "reportShowEpisodeSummary": False,
+            "reportShowLogbook": False,
+            "reportShowOverview": False,
+            "reportShowWeeklyReview": False,
+            "reportShowSettingsHistory": False,
+            "reportShowInsulinAssessment": False,
+            "startDate": start_date,
+            "endDate": end_date,
+            "aggregatedCsvEnabled": False,
+        }
+
+        headers = {
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cookie": "application_language=en; application_country=US",
+            "Authorization": f"Bearer {self.access_token}",
+            "Accept": "application/json, text/plain, */*",
+        }
+        if self.mag_identifier:
+            headers["mag-identifier"] = self.mag_identifier
+
+        generate_url = f"{reports_base}/generateReport"
+        try:
+            resp = await client.post(generate_url, json=payload, headers=headers)
+            if resp.status_code in (401, 403):
+                _LOGGER.warning("Report generation returned 401/403. Refreshing token and retrying...")
+                await self._refresh_token()
+                headers["Authorization"] = f"Bearer {self.access_token}"
+                resp = await client.post(generate_url, json=payload, headers=headers)
+        except httpx.RequestError as e:
+            _LOGGER.warning(f"Report generation network error: {e}")
+            return None
+
+        if resp.status_code != 200:
+            _LOGGER.warning(f"generateReport failed HTTP {resp.status_code}: {resp.text}")
+            return None
+
+        resp_data = resp.json()
+        uuid_val = resp_data.get("uuid") or resp_data.get("reportUuid") or resp_data.get("id")
+        if not uuid_val:
+            _LOGGER.warning(f"No UUID returned in generateReport response: {resp.text}")
+            return None
+
+        status_url = f"{reports_base}/reportStatus"
+        poll_timeout = 30.0
+        poll_interval = 2.0
+        elapsed = 0.0
+        is_ready = False
+
+        while elapsed < poll_timeout:
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+            try:
+                status_resp = await client.get(status_url, params={"uuid": uuid_val}, headers=headers)
+                if status_resp.status_code == 200:
+                    status_data = status_resp.json()
+                    status_val = status_data.get("status") if isinstance(status_data, dict) else str(status_data)
+                    if status_val == "READY":
+                        is_ready = True
+                        break
+                    elif status_val in ("FAILED", "ERROR"):
+                        _LOGGER.warning(f"Report generation failed with status: {status_val}")
+                        return None
+            except httpx.RequestError as e:
+                _LOGGER.warning(f"Error polling report status: {e}")
+
+        if not is_ready:
+            _LOGGER.warning(f"Report generation timed out after {poll_timeout}s for UUID: {uuid_val}")
+            return None
+
+        pdf_url = f"{reports_base}/reportPdf"
+        pdf_headers = dict(headers)
+        pdf_headers["Accept"] = "application/pdf, */*"
+
+        try:
+            pdf_resp = await client.get(
+                pdf_url,
+                params={"uuid": uuid_val, "dMInFileName": "false"},
+                headers=pdf_headers,
+            )
+            if pdf_resp.status_code != 200 or not pdf_resp.content.startswith(b"%PDF"):
+                fallback_url = f"{reports_base}/downloadReport"
+                pdf_resp = await client.get(
+                    fallback_url,
+                    params={"uuid": uuid_val},
+                    headers=pdf_headers,
+                )
+        except httpx.RequestError as e:
+            _LOGGER.warning(f"Error downloading report PDF: {e}")
+            return None
+
+        if pdf_resp.status_code == 200 and pdf_resp.content.startswith(b"%PDF"):
+            _LOGGER.info("Device settings PDF downloaded successfully.")
+            return pdf_resp.content
+
+        _LOGGER.warning("Carelink returned non-PDF or empty content for device settings report.")
+        return None
+
