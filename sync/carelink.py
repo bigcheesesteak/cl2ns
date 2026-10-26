@@ -379,6 +379,10 @@ class CarelinkClient:
         user_role = user_data.get("role", "PATIENT")
         self.role = "carepartner" if user_role in ("CARE_PARTNER", "CARE_PARTNER_OUS") else "patient"
 
+        # Resolve patient ID from user profile if not already set
+        if not self.patient_id and user_data.get("id"):
+            self.patient_id = str(user_data["id"])
+
         # If care partner role, resolve patient ID
         if self.role == "carepartner":
             if not self.patient_id:
@@ -502,11 +506,11 @@ class CarelinkClient:
         origin = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else "https://carelink.minimed.eu"
         reports_base = f"{origin}/patient/reports"
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc).replace(microsecond=0)
         client_time = now.isoformat()
         start_date = (now - timedelta(days=14)).strftime("%Y-%m-%d")
         end_date = (now - timedelta(days=1)).strftime("%Y-%m-%d")
-        patient_id = self.patient_id or ""
+        patient_id = str(self.patient_id or self.username or "")
 
         payload = {
             "clientTime": client_time,
@@ -535,6 +539,8 @@ class CarelinkClient:
             "Cookie": "application_language=en; application_country=US",
             "Authorization": f"Bearer {self.access_token}",
             "Accept": "application/json, text/plain, */*",
+            "Origin": origin,
+            "Referer": f"{origin}/app/reports",
         }
         if self.mag_identifier:
             headers["mag-identifier"] = self.mag_identifier
