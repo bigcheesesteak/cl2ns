@@ -412,9 +412,10 @@ class CarelinkClient:
             if not active_patients:
                 raise CarelinkError("Care Partner account has no linked patients.")
 
+            configured_id = self.patient_id
             matched_patient = None
-            if self.patient_id:
-                target_str = str(self.patient_id).strip().lower()
+            if configured_id:
+                target_str = str(configured_id).strip().lower()
                 for p in active_patients:
                     p_user = str(p.get("username", "")).strip().lower()
                     p_id = str(p.get("id", "")).strip().lower()
@@ -422,10 +423,15 @@ class CarelinkClient:
                         matched_patient = p
                         break
                 if not matched_patient:
-                    _LOGGER.warning(
-                        f"Configured CARELINK_PATIENT_ID '{self.patient_id}' not found in active patients. "
-                        f"Available: {[p.get('username') for p in active_patients]}. Defaulting to first active patient."
-                    )
+                    if target_str.isdigit():
+                        _LOGGER.info(
+                            f"Configured CARELINK_PATIENT_ID '{configured_id}' is numeric; associating with active patient '{active_patients[0].get('username')}'."
+                        )
+                    else:
+                        _LOGGER.warning(
+                            f"Configured CARELINK_PATIENT_ID '{configured_id}' not found in active patients. "
+                            f"Available: {[p.get('username') for p in active_patients]}. Defaulting to first active patient."
+                        )
                     matched_patient = active_patients[0]
             else:
                 matched_patient = active_patients[0]
@@ -438,7 +444,9 @@ class CarelinkClient:
 
             self.patient_username = matched_patient.get("username")
             p_id = matched_patient.get("id") or matched_patient.get("accountId")
-            if p_id is not None:
+            if configured_id and str(configured_id).isdigit():
+                self.patient_id = str(configured_id)
+            elif p_id is not None and str(p_id).isdigit():
                 self.patient_id = str(p_id)
             else:
                 self.patient_id = str(matched_patient.get("username", ""))
