@@ -467,6 +467,15 @@ class CarelinkClient:
         has_volume_tokens = await self.load_tokens()
         volume_access_token = self.access_token if has_volume_tokens else None
 
+        if has_volume_tokens and self._are_env_tokens_new(volume_access_token):
+            _LOGGER.info(
+                "Fresh environment tokens detected (newer than stored volume tokens). Applying environment tokens..."
+            )
+            self._apply_env_tokens()
+            await self._setup_session()
+            await self.save_tokens()
+            return
+
         if has_volume_tokens:
             try:
                 await self._setup_session()
@@ -600,10 +609,15 @@ class CarelinkClient:
             headers["mag-identifier"] = self.mag_identifier
 
         generate_url = f"{reports_base}/generateReport"
+        _LOGGER.info(
+            f"Requesting device settings report for patientId '{patient_id}' (user: {self.username}, role: {self.role})..."
+        )
         try:
             resp = await client.post(generate_url, json=payload, headers=headers)
             if resp.status_code in (401, 403):
-                _LOGGER.warning("Report generation returned 401/403. Refreshing token and retrying...")
+                _LOGGER.warning(
+                    f"Report generation returned {resp.status_code} ({resp.text}). Refreshing token and retrying..."
+                )
                 await self._refresh_token()
                 headers["Authorization"] = f"Bearer {self.access_token}"
                 resp = await client.post(generate_url, json=payload, headers=headers)
