@@ -385,10 +385,13 @@ class CarelinkClient:
 
         if self.role == "patient":
             self.patient_username = self.username
-            if not self.patient_id and user_data.get("id"):
+            if user_data.get("id"):
                 self.patient_id = str(user_data["id"])
             elif not self.patient_id:
                 self.patient_id = self.username
+            _LOGGER.info(
+                f"Resolved Patient: username='{self.patient_username}', id='{self.patient_id}'"
+            )
         else:
             # Query linked patients for Care Partner role
             patients_url = self.config["baseUrlCareLink"] + "/links/patients"
@@ -433,7 +436,12 @@ class CarelinkClient:
                     )
 
             self.patient_username = matched_patient.get("username")
-            self.patient_id = str(matched_patient.get("id") or matched_patient.get("username"))
+            p_id = matched_patient.get("id")
+            if p_id is not None:
+                self.patient_id = str(p_id)
+            else:
+                self.patient_id = str(matched_patient.get("username", ""))
+
             _LOGGER.info(
                 f"Resolved Care Partner target patient: username='{self.patient_username}', id='{self.patient_id}'"
             )
@@ -541,7 +549,13 @@ class CarelinkClient:
         client_time = now.isoformat()
         start_date = (now - timedelta(days=14)).strftime("%Y-%m-%d")
         end_date = (now - timedelta(days=1)).strftime("%Y-%m-%d")
-        patient_id = str(self.patient_id or self.patient_username or self.username or "")
+        patient_id = str(self.patient_id or "")
+        if not patient_id.isdigit():
+            _LOGGER.warning(
+                f"Cannot generate report: patientId '{patient_id}' is not numeric. "
+                "Carelink generateReport requires a numeric patient ID."
+            )
+            return None
 
         payload = {
             "clientTime": client_time,
